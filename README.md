@@ -1,7 +1,6 @@
 # kubecuttle
 
 ## Notes
-
 Used Cobra Generator to generate app
 * Ease of use
 * Cobra pretty standard in Go so people can easily navigate it. 
@@ -11,7 +10,7 @@ Used Cobra Generator to generate app
 
 ## The challenge
 
-The goal is to create a CLI (called `kubecuttle`) which reimplements a small subset of `kubectl apply` functionality. Choose any language you like, we will find a reviewer who is versed in it. We recommend you spend approximately 6 hours on this exercise.
+The goal is to create a CLI (called `kubecuttle`) which reimplements a small subset of `kubectl apply` functionality. 
 
 ## Requirements
 
@@ -68,19 +67,9 @@ spec:
 EOF
 ```
 
-A successful submission, will:
+Success looks like this:
 1. Work with a kubernetes cluster that is currently active as a context.
 2. Report any problems with the input.
 3. Be designed with the intention of extending it in the future to support other `kinds`.
 4. Contain a short documentation on how we can test the CLI.
 5. Describe what steps would be taken if you were to release this software to a wider audience (from the non-functional perspective).
-
-## Running Kubernetes locally
-
-If you don't have your own local cluster already, you might find these local k8s distros useful:
-1. [kind](https://kind.sigs.k8s.io/)
-2. [docker desktop](https://birthday.play-with-docker.com/kubernetes-docker-desktop/)
-
-## Submitting your solution
-
-The full code of your solution should be available as a Github repo.
