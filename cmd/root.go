@@ -28,7 +28,7 @@ var cfgFile string
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   "kubekuttle",
+	Use:   "kubecuttle",
 	Short: "Reimplementation of kubectl apply -f",
 	Long:  `Reimplementation of kubectl apply -f -. Only input from STDIN is supported`,
 	// Uncomment the following line if your bare application
@@ -49,7 +49,7 @@ func init() {
 	// Cobra supports persistent flags, which, if defined here,
 	// will be global for your application.
 
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.kubekuttle.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.kubecuttle.yaml)")
 
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.
@@ -66,10 +66,10 @@ func initConfig() {
 		home, err := os.UserHomeDir()
 		cobra.CheckErr(err)
 
-		// Search config in home directory with name ".kubekuttle" (without extension).
+		// Search config in home directory with name ".kubecuttle" (without extension).
 		viper.AddConfigPath(home)
 		viper.SetConfigType("yaml")
-		viper.SetConfigName(".kubekuttle")
+		viper.SetConfigName(".kubecuttle")
 	}
 
 	viper.AutomaticEnv() // read in environment variables that match
