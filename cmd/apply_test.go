@@ -28,7 +28,7 @@ spec:
     - "1000000"
 `
 
-var onePodUpdate = `
+var onePodMetaUpdate = `
 apiVersion: v1
 kind: Pod
 metadata:
@@ -43,6 +43,21 @@ spec:
     args:
     - sleep
     - "1000000"
+`
+
+var onePodSpecUpdate = `
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox-sleep
+  namespace: sre-test
+spec:
+  containers:
+  - name: busybox
+    image: busybox
+    args:
+    - sleep
+    - "300"
 `
 
 var twoPods = `
@@ -112,7 +127,7 @@ func TestCreateOrApplyPods(t *testing.T) {
 	err = CreateOrApplyPod(client, pods[0])
 	require.NoError(t, err, "failed to create or apply pods")
 
-	yamlDecoder = yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(onePodUpdate)), 4096)
+	yamlDecoder = yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(onePodMetaUpdate)), 4096)
 	updatedPods, err := DecodePods(yamlDecoder)
 	require.NoError(t, err, "got error from DecodePods")
 
@@ -135,6 +150,32 @@ func TestApplyPods(t *testing.T) {
 
 	err = ApplyPod(client, existingPods[0], desiredPods[0])
 	require.NoError(t, err, "failed to apply pods")
+}
+
+func TestPodsSpecUpdate(t *testing.T) {
+	client, err := clientInit()
+	require.NoError(t, err, "failed to initialize client")
+
+	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(onePod)), 4096)
+	pods, err := DecodePods(yamlDecoder)
+	require.NoError(t, err, "got error from DecodePods")
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		err := client.CoreV1().Pods(pods[0].Namespace).Delete(ctx, pods[0].Name, *v1.NewDeleteOptions(0))
+		require.NoErrorf(t, err, "failed to delete pod: %s/%s", pods[0].Namespace, pods[0].Name)
+	})
+
+	err = CreateOrApplyPod(client, pods[0])
+	require.NoError(t, err, "failed to create or apply pods")
+
+	yamlDecoder = yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(onePodSpecUpdate)), 4096)
+	updatedPods, err := DecodePods(yamlDecoder)
+	require.NoError(t, err, "got error from DecodePods")
+
+	err = CreateOrApplyPod(client, updatedPods[0])
+	require.NoError(t, err, "failed to create or apply pods")
 }
 
 func TestDiffMetadata(t *testing.T) {

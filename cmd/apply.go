@@ -205,11 +205,21 @@ func ApplyPod(client *kubernetes.Clientset, existingPod, desiredPod *v1.Pod) err
 // diffMetadata diffs the existing vs the desired Pods ObjectMeta as these are
 // the only fields that can be changed at runtime.
 func diffMetadata(podApplyConf *applyv1.PodApplyConfiguration, existingPod, desiredPod *v1.Pod) {
-	if !reflect.DeepEqual(existingPod.ObjectMeta, desiredPod.ObjectMeta) {
-		// Apply existing pod metadata
-		// TODO WithOwnerReference
-		podApplyConf.WithLabels(desiredPod.Labels)
+	// TODO WithOwnerReference
+	if !reflect.DeepEqual(existingPod.ObjectMeta.Annotations, desiredPod.ObjectMeta.Annotations) {
 		podApplyConf.WithAnnotations(desiredPod.Annotations)
+	}
+	if !reflect.DeepEqual(existingPod.ObjectMeta.Labels, desiredPod.ObjectMeta.Labels) {
+		podApplyConf.WithLabels(desiredPod.Labels)
+	}
+	if !reflect.DeepEqual(existingPod.ObjectMeta.Finalizers, desiredPod.ObjectMeta.Finalizers) {
 		podApplyConf.WithFinalizers(desiredPod.GetFinalizers()...)
 	}
+}
+
+func diffSpec(podApplyConf *applyv1.PodApplyConfiguration, existingPod, desiredPod *v1.Pod) error {
+	if !reflect.DeepEqual(existingPod.Spec, desiredPod.Spec) {
+		return fmt.Errorf("existing and desired pods have different specs. spec cannot be updated at runtime")
+	}
+	return nil
 }
