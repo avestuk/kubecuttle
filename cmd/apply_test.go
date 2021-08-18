@@ -17,7 +17,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	applyv1 "k8s.io/client-go/applyconfigurations/core/v1"
-	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
 )
@@ -120,9 +119,17 @@ func TestDecodePods(t *testing.T) {
 
 func TestThing(t *testing.T) {
 	// 1. Have GVK need GVR
-	dynamicClient, discoveryClient, err := dynamicClientInit()
+	//dynamicClient, discoveryClient, err := dynamicClientInit()
+	dynamicClient, _, err := dynamicClientInit()
 	require.NoError(t, err, "failed to build client")
-	mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(discoveryClient))
+	//mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(discoveryClient))
+
+	// TODO - Check whether you can just build a regular client and not do the whole MemCache thing
+	client, err := typedClientInit()
+	require.NoError(t, err, "failed to build client")
+	gr, err := restmapper.GetAPIGroupResources(client.Discovery())
+	require.NoError(t, err, "failed to get API group resources")
+	mapper := restmapper.NewDiscoveryRESTMapper(gr)
 
 	// 3. Decode YAML
 	decodingSerializer := serializerYaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
