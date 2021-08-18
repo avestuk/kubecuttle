@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -12,12 +13,17 @@ import (
 	"github.com/spf13/cobra"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	applyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 
+	serializerYaml "k8s.io/apimachinery/pkg/runtime/serializer/yaml"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -38,10 +44,6 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// kubecuttle apply arg1 -f arg2
-		// This would print arg1
-		fmt.Printf("apply called with args: %s\n", args)
-
 		input, err := cmd.Flags().GetString("file")
 		if err != nil {
 			return fmt.Errorf("could not get value of file flag, got err: %s", err)
@@ -70,16 +72,63 @@ to quickly create a Cobra application.`,
 
 		objects, err := decode(yamlDecoder)
 		if err != nil {
-			return fmt.Errorf("got err decoding objects, err: %w", err)
+			return fmt.Errorf("failed to decode objects, got err: %w", err)
 		}
 
-		fmt.Printf("TODO REMOVE ME: %d", len(objects))
+		// Build clients
+		client, dynamicClient, err := buildK8sClients()
+		if err != nil {
+			return fmt.Errorf("failed to build clients, got err: %w", err)
+		}
 
-		//for _, object := range objects {
+		// Fetch K8s group resources
+		gr, err := restmapper.GetAPIGroupResources(client.Discovery())
+		if err != nil {
+			return fmt.Errorf("failed to get API group resources, got err: %w", err)
+		}
+		mapper := restmapper.NewDiscoveryRESTMapper(gr)
 
-		//}
+		decodingSerializer := serializerYaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
 
-		fmt.Printf("apply called with flag arguments: %s\n", input)
+		for _, object := range objects {
+			obj := &unstructured.Unstructured{}
+
+			runtimeObj, gvk, err := decodingSerializer.Decode(object.Raw, nil, obj)
+			if err != nil {
+				return fmt.Errorf("failed to decode object, got err: %w", err)
+			}
+
+			gvr, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+			if err != nil {
+				return fmt.Errorf("failed to get gvr, got err: %w", err)
+			}
+
+			// 6. Obtain the REST interface for the GVR
+			var dr dynamic.ResourceInterface
+			if gvr.Scope.Name() == meta.RESTScopeNameNamespace {
+				dr = dynamicClient.Resource(gvr.Resource).Namespace(obj.GetNamespace())
+			} else {
+				dr = dynamicClient.Resource(gvr.Resource)
+			}
+
+			// 6. Marshal Object into JSON
+			data, err := json.Marshal(runtimeObj)
+			if err != nil {
+				return fmt.Errorf("failed to marshal json to runtime obj, got err: %w", err)
+			}
+
+			// 7. Apply the thing
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			k8sObj, err := dr.Patch(ctx, obj.GetName(), types.ApplyPatchType, data, metav1.PatchOptions{
+				FieldManager: "kubecuttle",
+			})
+			if err != nil {
+				return fmt.Errorf("failed to apply obj, got err: %w", err)
+			}
+
+			fmt.Printf("\n%s %s/%s updated\n", k8sObj.GetKind(), k8sObj.GetNamespace(), k8sObj.GetName())
+		}
 
 		return nil
 	},
@@ -187,6 +236,10 @@ func decode(y *yaml.YAMLOrJSONDecoder) ([]*runtime.RawExtension, error) {
 		}
 		objects = append(objects, obj)
 	}
+}
+
+func applyObjects() {
+
 }
 
 func CreateOrApplyPod(client *kubernetes.Clientset, desiredPod *v1.Pod) error {
