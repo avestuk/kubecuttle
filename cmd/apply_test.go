@@ -2,15 +2,24 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	serializerYaml "k8s.io/apimachinery/pkg/runtime/serializer/yaml"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	applyv1 "k8s.io/client-go/applyconfigurations/core/v1"
+	"k8s.io/client-go/discovery/cached/memory"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/restmapper"
 )
 
 var onePod = `
@@ -109,8 +118,80 @@ func TestDecodePods(t *testing.T) {
 	require.Len(t, pods, 2)
 }
 
+func TestThing(t *testing.T) {
+	// 1. Have GVK need GVR
+	dynamicClient, discoveryClient, err := dynamicClientInit()
+	require.NoError(t, err, "failed to build client")
+	mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(discoveryClient))
+
+	// 3. Decode YAML
+	decodingSerializer := serializerYaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
+	obj := &unstructured.Unstructured{}
+
+	// 4. Find GVK
+	runtimeObj, gvk, err := decodingSerializer.Decode([]byte(onePod), nil, obj)
+	require.NoError(t, err, "got err deserializng")
+
+	fmt.Printf("gvk: %s", gvk.String())
+
+	// 4. Find GVR
+	gvr, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	require.NoError(t, err, "failed to get gvr")
+
+	// 6. Obtain the REST interface for the GVR
+	var dr dynamic.ResourceInterface
+	if gvr.Scope.Name() == meta.RESTScopeNameNamespace {
+		dr = dynamicClient.Resource(gvr.Resource).Namespace(obj.GetNamespace())
+	} else {
+		dr = dynamicClient.Resource(gvr.Resource)
+	}
+
+	// 6. Marshal Object into JSON
+	data, err := json.Marshal(runtimeObj)
+	require.NoError(t, err, "failed to marshal json to runtime obj")
+
+	// 7. Apply the thing
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	obj, err = dr.Patch(ctx, obj.GetName(), types.ApplyPatchType, data, metav1.PatchOptions{
+		FieldManager: "kubecuttle",
+	})
+	require.NoError(t, err, "failed to apply obj")
+
+	// Go again with the next pod
+	modifiedObj := &unstructured.Unstructured{}
+
+	// 4. Find GVK
+	mruntimeObj, gvk, err := decodingSerializer.Decode([]byte(onePodMetaUpdate), nil, modifiedObj)
+	require.NoError(t, err, "got err deserializng")
+
+	// 4. Find GVR
+	gvr, err = mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	require.NoError(t, err, "failed to get gvr")
+
+	// 6. Obtain the REST interface for the GVR
+	if gvr.Scope.Name() == meta.RESTScopeNameNamespace {
+		dr = dynamicClient.Resource(gvr.Resource).Namespace(obj.GetNamespace())
+	} else {
+		dr = dynamicClient.Resource(gvr.Resource)
+	}
+
+	// 6. Marshal Object into JSON
+	mdata, err := json.Marshal(mruntimeObj)
+	require.NoError(t, err, "failed to marshal json to runtime obj")
+
+	// 7. Apply the thing
+	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = dr.Patch(ctx, modifiedObj.GetName(), types.ApplyPatchType, mdata, metav1.PatchOptions{
+		FieldManager: "kubecuttle",
+	})
+	require.NoError(t, err, "failed to apply obj")
+
+}
+
 func TestCreateOrApplyPods(t *testing.T) {
-	client, err := clientInit()
+	client, err := typedClientInit()
 	require.NoError(t, err, "failed to initialize client")
 
 	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(onePod)), 4096)
@@ -120,7 +201,7 @@ func TestCreateOrApplyPods(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		err := client.CoreV1().Pods(pods[0].Namespace).Delete(ctx, pods[0].Name, *v1.NewDeleteOptions(0))
+		err := client.CoreV1().Pods(pods[0].Namespace).Delete(ctx, pods[0].Name, *metav1.NewDeleteOptions(0))
 		require.NoErrorf(t, err, "failed to delete pod: %s/%s", pods[0].Namespace, pods[0].Name)
 	})
 
@@ -137,7 +218,7 @@ func TestCreateOrApplyPods(t *testing.T) {
 }
 
 func TestApplyPods(t *testing.T) {
-	client, err := clientInit()
+	client, err := typedClientInit()
 	require.NoError(t, err, "failed to initialize client")
 
 	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(twoPods)), 4096)
@@ -153,7 +234,7 @@ func TestApplyPods(t *testing.T) {
 }
 
 func TestPodsSpecUpdate(t *testing.T) {
-	client, err := clientInit()
+	client, err := typedClientInit()
 	require.NoError(t, err, "failed to initialize client")
 
 	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(onePod)), 4096)
@@ -163,7 +244,7 @@ func TestPodsSpecUpdate(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		err := client.CoreV1().Pods(pods[0].Namespace).Delete(ctx, pods[0].Name, *v1.NewDeleteOptions(0))
+		err := client.CoreV1().Pods(pods[0].Namespace).Delete(ctx, pods[0].Name, *metav1.NewDeleteOptions(0))
 		require.NoErrorf(t, err, "failed to delete pod: %s/%s", pods[0].Namespace, pods[0].Name)
 	})
 

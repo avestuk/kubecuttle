@@ -15,6 +15,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	applyv1 "k8s.io/client-go/applyconfigurations/core/v1"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/rest"
 
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes"
@@ -36,7 +39,7 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, err := clientInit()
+		client, err := typedClientInit()
 		if err != nil {
 			return fmt.Errorf("got an error: %s", err)
 		}
@@ -103,7 +106,40 @@ func init() {
 	// ApplyCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
-func clientInit() (*kubernetes.Clientset, error) {
+func typedClientInit() (*kubernetes.Clientset, error) {
+	config, err := buildConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build config, got err: %w", err)
+	}
+
+	client, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build k8s client, got err: %w", err)
+	}
+
+	return client, nil
+}
+
+func dynamicClientInit() (dynamic.Interface, *discovery.DiscoveryClient, error) {
+	config, err := buildConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to build config, got err: %w", err)
+	}
+
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to build k8s client, got err: %w", err)
+	}
+
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return dynamicClient, discoveryClient, nil
+}
+
+func buildConfig() (*rest.Config, error) {
 	kubeconfigPath := os.Getenv("KUBECONFIG")
 	if kubeconfigPath == "" {
 		return nil, fmt.Errorf("KUBECONFIG was empty")
@@ -114,12 +150,7 @@ func clientInit() (*kubernetes.Clientset, error) {
 		return nil, fmt.Errorf("failed to read kubeconfig from file: %s", kubeconfigPath)
 	}
 
-	client, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build k8s client, got err: %w", err)
-	}
-
-	return client, nil
+	return config, nil
 }
 
 // DecodePods decodes yaml -> *v1.Pod.
@@ -140,6 +171,10 @@ func DecodePods(y *yaml.YAMLOrJSONDecoder) ([]*v1.Pod, error) {
 
 		pods = append(pods, pod)
 	}
+}
+
+func decode(y *yaml.YAMLOrJSONDecoder) {
+
 }
 
 func CreateOrApplyPod(client *kubernetes.Clientset, desiredPod *v1.Pod) error {
