@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -141,15 +142,15 @@ func DecodePods(y *yaml.YAMLOrJSONDecoder) ([]*v1.Pod, error) {
 	}
 }
 
-func CreateOrApplyPod(client *kubernetes.Clientset, pod *v1.Pod) error {
+func CreateOrApplyPod(client *kubernetes.Clientset, desiredPod *v1.Pod) error {
 	// Attempt to get pods. If pods cannot be gotten then create them.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	p, err := client.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+	existingPod, err := client.CoreV1().Pods(desiredPod.Namespace).Get(ctx, desiredPod.Name, metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Set Managed Field to be our CLI App
-			pod.SetManagedFields([]metav1.ManagedFieldsEntry{
+			desiredPod.SetManagedFields([]metav1.ManagedFieldsEntry{
 				{
 					Manager:   fieldManager,
 					Operation: metav1.ManagedFieldsOperationApply,
@@ -161,7 +162,7 @@ func CreateOrApplyPod(client *kubernetes.Clientset, pod *v1.Pod) error {
 			// TODO Call CreatePod func
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			pod, err := client.CoreV1().Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+			pod, err := client.CoreV1().Pods(desiredPod.Namespace).Create(ctx, desiredPod, metav1.CreateOptions{})
 			if err != nil {
 				return err
 			}
@@ -173,22 +174,22 @@ func CreateOrApplyPod(client *kubernetes.Clientset, pod *v1.Pod) error {
 	}
 
 	// Call ApplyPod func
-	return ApplyPod(client, p)
+	return ApplyPod(client, existingPod, desiredPod)
 
 }
 
-func ApplyPod(client *kubernetes.Clientset, pod *v1.Pod) error {
-	podApplyConf, err := applyv1.ExtractPod(pod, fieldManager)
+func ApplyPod(client *kubernetes.Clientset, existingPod, desiredPod *v1.Pod) error {
+	podApplyConf, err := applyv1.ExtractPod(existingPod, fieldManager)
 	if err != nil {
 		return fmt.Errorf("got err extracting pod, err: %w", err)
 	}
 
-	fmt.Printf("%v", *podApplyConf)
+	diffMetadata(podApplyConf, existingPod, desiredPod)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	appliedPod, err := client.CoreV1().Pods(pod.Namespace).Apply(ctx, podApplyConf, metav1.ApplyOptions{
+	appliedPod, err := client.CoreV1().Pods(existingPod.Namespace).Apply(ctx, podApplyConf, metav1.ApplyOptions{
 		FieldManager: fieldManager,
 	})
 
@@ -199,4 +200,16 @@ func ApplyPod(client *kubernetes.Clientset, pod *v1.Pod) error {
 	fmt.Printf("applied pod: \n%v", appliedPod)
 
 	return nil
+}
+
+// diffMetadata diffs the existing vs the desired Pods ObjectMeta as these are
+// the only fields that can be changed at runtime.
+func diffMetadata(podApplyConf *applyv1.PodApplyConfiguration, existingPod, desiredPod *v1.Pod) {
+	if !reflect.DeepEqual(existingPod.ObjectMeta, desiredPod.ObjectMeta) {
+		// Apply existing pod metadata
+		// TODO WithOwnerReference
+		podApplyConf.WithLabels(desiredPod.Labels)
+		podApplyConf.WithAnnotations(desiredPod.Annotations)
+		podApplyConf.WithFinalizers(desiredPod.GetFinalizers()...)
+	}
 }

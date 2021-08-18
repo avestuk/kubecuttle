@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/yaml"
+	applyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 )
 
 var onePod = `
@@ -121,11 +122,35 @@ func TestCreateOrApplyPods(t *testing.T) {
 }
 
 func TestApplyPods(t *testing.T) {
+	client, err := clientInit()
+	require.NoError(t, err, "failed to initialize client")
+
 	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(twoPods)), 4096)
-	pods, err := DecodePods(yamlDecoder)
+	existingPods, err := DecodePods(yamlDecoder)
 	require.NoError(t, err, "got err from decode pods")
 
-	for _, pod := range pods {
-		ApplyPod(nil, pod)
-	}
+	yamlDecoder = yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(twoPods)), 4096)
+	desiredPods, err := DecodePods(yamlDecoder)
+	require.NoError(t, err, "got err from decode pods")
+
+	err = ApplyPod(client, existingPods[0], desiredPods[0])
+	require.NoError(t, err, "failed to apply pods")
+}
+
+func TestDiffMetadata(t *testing.T) {
+	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(twoPods)), 4096)
+	existingPods, err := DecodePods(yamlDecoder)
+	require.NoError(t, err, "got err from decode pods")
+
+	yamlDecoder = yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(twoPods)), 4096)
+	desiredPods, err := DecodePods(yamlDecoder)
+	require.NoError(t, err, "got err from decode pods")
+
+	podApplyConf, err := applyv1.ExtractPod(existingPods[0], fieldManager)
+	require.NoError(t, err, "failed to extract apply config")
+
+	diffMetadata(podApplyConf, existingPods[0], desiredPods[0])
+	require.Equal(t, podApplyConf.Labels, desiredPods[0].Labels)
+	require.Equal(t, podApplyConf.Annotations, desiredPods[0].Annotations)
+	require.Equal(t, podApplyConf.Finalizers, desiredPods[0].Finalizers)
 }
