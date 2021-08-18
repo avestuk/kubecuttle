@@ -1,21 +1,20 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"os"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	applyv1 "k8s.io/client-go/applyconfigurations/core/v1"
-	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 
@@ -39,11 +38,6 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, err := typedClientInit()
-		if err != nil {
-			return fmt.Errorf("got an error: %s", err)
-		}
-
 		// kubecuttle apply arg1 -f arg2
 		// This would print arg1
 		fmt.Printf("apply called with args: %s\n", args)
@@ -72,18 +66,18 @@ to quickly create a Cobra application.`,
 		}
 
 		// Attempt to decode input into pods.
-		yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(string(fileContents))), 4096)
+		yamlDecoder := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(fileContents), 4096)
 
-		pods, err := DecodePods(yamlDecoder)
+		objects, err := decode(yamlDecoder)
 		if err != nil {
-			return fmt.Errorf("failed to decode input, got err: %w", err)
+			return fmt.Errorf("got err decoding objects, err: %w", err)
 		}
 
-		for _, pod := range pods {
-			if err := CreateOrApplyPod(client, pod); err != nil {
-				fmt.Printf("got err creating or applying pods, err: %s", err)
-			}
-		}
+		fmt.Printf("TODO REMOVE ME: %d", len(objects))
+
+		//for _, object := range objects {
+
+		//}
 
 		fmt.Printf("apply called with flag arguments: %s\n", input)
 
@@ -106,12 +100,27 @@ func init() {
 	// ApplyCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
-func typedClientInit() (*kubernetes.Clientset, error) {
+// buildK8sClients returns a typed K8s client and a dynamic k8s client.
+func buildK8sClients() (*kubernetes.Clientset, dynamic.Interface, error) {
 	config, err := buildConfig()
 	if err != nil {
-		return nil, fmt.Errorf("failed to build config, got err: %w", err)
+		return nil, nil, fmt.Errorf("failed to build config, got err: %w", err)
 	}
 
+	client, err := typedClientInit(config)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to build k8s client, got err: %w", err)
+	}
+
+	dynamicClient, err := dynamicClientInit(config)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to build dynmaic client, got err: %w", err)
+	}
+
+	return client, dynamicClient, nil
+}
+
+func typedClientInit(config *rest.Config) (*kubernetes.Clientset, error) {
 	client, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build k8s client, got err: %w", err)
@@ -120,23 +129,13 @@ func typedClientInit() (*kubernetes.Clientset, error) {
 	return client, nil
 }
 
-func dynamicClientInit() (dynamic.Interface, *discovery.DiscoveryClient, error) {
-	config, err := buildConfig()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to build config, got err: %w", err)
-	}
-
-	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to build k8s client, got err: %w", err)
-	}
-
+func dynamicClientInit(config *rest.Config) (dynamic.Interface, error) {
 	dynamicClient, err := dynamic.NewForConfig(config)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	return dynamicClient, discoveryClient, nil
+	return dynamicClient, nil
 }
 
 func buildConfig() (*rest.Config, error) {
@@ -173,8 +172,21 @@ func DecodePods(y *yaml.YAMLOrJSONDecoder) ([]*v1.Pod, error) {
 	}
 }
 
-func decode(y *yaml.YAMLOrJSONDecoder) {
+func decode(y *yaml.YAMLOrJSONDecoder) ([]*runtime.RawExtension, error) {
+	objects := []*runtime.RawExtension{}
 
+	for {
+		obj := &runtime.RawExtension{}
+		if err := y.Decode(obj); err != nil {
+			// We expect an EOF error when decoding is done,
+			// anything else should count as a function fail.
+			if err.Error() != "EOF" {
+				return nil, err
+			}
+			return objects, nil
+		}
+		objects = append(objects, obj)
+	}
 }
 
 func CreateOrApplyPod(client *kubernetes.Clientset, desiredPod *v1.Pod) error {
