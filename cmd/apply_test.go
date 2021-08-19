@@ -102,17 +102,24 @@ func TestApplyCmd(t *testing.T) {
 }
 
 func TestDecode(t *testing.T) {
-	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(twoPods)), 4096)
+	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(onePod)), 4096)
 
-	objects, err := decode(yamlDecoder)
+	objects, err := decodeInput(yamlDecoder)
 	require.NoError(t, err, "failed to decode objects")
-	require.Len(t, objects, 2, "expected two objects")
+	require.Len(t, objects, 1, "expected two objects")
+
+	decodingSerializer := serializerYaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
+	obj := &unstructured.Unstructured{}
+	runtimeObj, _, err := decodeRawObjects(decodingSerializer, objects[0].Raw, obj)
+	require.NoError(t, err, "failed to decode raw objects")
+
+	runtimeObj.GetObjectKind().GroupVersionKind()
 
 }
 func TestDecodePods(t *testing.T) {
 	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(twoPods)), 4096)
 
-	pods, err := DecodePods(yamlDecoder)
+	pods, err := decodeInput(yamlDecoder)
 	require.NoError(t, err, "got error from DecodePods")
 	require.Len(t, pods, 2)
 }
@@ -215,91 +222,3 @@ func TestThing(t *testing.T) {
 	require.NoError(t, err, "failed to apply obj")
 
 }
-
-//func TestCreateOrApplyPods(t *testing.T) {
-//	client, err := typedClientInit()
-//	require.NoError(t, err, "failed to initialize client")
-//
-//	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(onePod)), 4096)
-//	pods, err := DecodePods(yamlDecoder)
-//	require.NoError(t, err, "got error from DecodePods")
-//
-//	t.Cleanup(func() {
-//		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-//		defer cancel()
-//		err := client.CoreV1().Pods(pods[0].Namespace).Delete(ctx, pods[0].Name, *metav1.NewDeleteOptions(0))
-//		require.NoErrorf(t, err, "failed to delete pod: %s/%s", pods[0].Namespace, pods[0].Name)
-//	})
-//
-//	err = CreateOrApplyPod(client, pods[0])
-//	require.NoError(t, err, "failed to create or apply pods")
-//
-//	yamlDecoder = yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(onePodMetaUpdate)), 4096)
-//	updatedPods, err := DecodePods(yamlDecoder)
-//	require.NoError(t, err, "got error from DecodePods")
-//
-//	err = CreateOrApplyPod(client, updatedPods[0])
-//	require.NoError(t, err, "failed to create or apply pods")
-//
-//}
-
-//func TestApplyPods(t *testing.T) {
-//	client, err := typedClientInit()
-//	require.NoError(t, err, "failed to initialize client")
-//
-//	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(twoPods)), 4096)
-//	existingPods, err := DecodePods(yamlDecoder)
-//	require.NoError(t, err, "got err from decode pods")
-//
-//	yamlDecoder = yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(twoPods)), 4096)
-//	desiredPods, err := DecodePods(yamlDecoder)
-//	require.NoError(t, err, "got err from decode pods")
-//
-//	err = ApplyPod(client, existingPods[0], desiredPods[0])
-//	require.NoError(t, err, "failed to apply pods")
-//}
-
-//func TestPodsSpecUpdate(t *testing.T) {
-//	client, err := typedClientInit()
-//	require.NoError(t, err, "failed to initialize client")
-//
-//	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(onePod)), 4096)
-//	pods, err := DecodePods(yamlDecoder)
-//	require.NoError(t, err, "got error from DecodePods")
-//
-//	t.Cleanup(func() {
-//		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-//		defer cancel()
-//		err := client.CoreV1().Pods(pods[0].Namespace).Delete(ctx, pods[0].Name, *metav1.NewDeleteOptions(0))
-//		require.NoErrorf(t, err, "failed to delete pod: %s/%s", pods[0].Namespace, pods[0].Name)
-//	})
-//
-//	err = CreateOrApplyPod(client, pods[0])
-//	require.NoError(t, err, "failed to create or apply pods")
-//
-//	yamlDecoder = yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(onePodSpecUpdate)), 4096)
-//	updatedPods, err := DecodePods(yamlDecoder)
-//	require.NoError(t, err, "got error from DecodePods")
-//
-//	err = CreateOrApplyPod(client, updatedPods[0])
-//	require.NoError(t, err, "failed to create or apply pods")
-//}
-//
-//func TestDiffMetadata(t *testing.T) {
-//	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(twoPods)), 4096)
-//	existingPods, err := DecodePods(yamlDecoder)
-//	require.NoError(t, err, "got err from decode pods")
-//
-//	yamlDecoder = yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(twoPods)), 4096)
-//	desiredPods, err := DecodePods(yamlDecoder)
-//	require.NoError(t, err, "got err from decode pods")
-//
-//	podApplyConf, err := applyv1.ExtractPod(existingPods[0], fieldManager)
-//	require.NoError(t, err, "failed to extract apply config")
-//
-//	diffMetadata(podApplyConf, existingPods[0], desiredPods[0])
-//	require.Equal(t, podApplyConf.Labels, desiredPods[0].Labels)
-//	require.Equal(t, podApplyConf.Annotations, desiredPods[0].Annotations)
-//	require.Equal(t, podApplyConf.Finalizers, desiredPods[0].Finalizers)
-//}
-//

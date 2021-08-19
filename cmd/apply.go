@@ -7,22 +7,19 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"reflect"
 	"time"
 
 	"github.com/spf13/cobra"
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	applyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	serializerYaml "k8s.io/apimachinery/pkg/runtime/serializer/yaml"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes"
@@ -70,7 +67,7 @@ to quickly create a Cobra application.`,
 		// Attempt to decode input into pods.
 		yamlDecoder := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(fileContents), 4096)
 
-		objects, err := decode(yamlDecoder)
+		objects, err := decodeInput(yamlDecoder)
 		if err != nil {
 			return fmt.Errorf("failed to decode objects, got err: %w", err)
 		}
@@ -81,29 +78,45 @@ to quickly create a Cobra application.`,
 			return fmt.Errorf("failed to build clients, got err: %w", err)
 		}
 
-		// Fetch K8s group resources
+		// Fetch K8s group resources, essentially a list of resources
+		// and their mapping to a Kubernetes Kind. Essentially equates
+		// to kubectl api-resources.
 		gr, err := restmapper.GetAPIGroupResources(client.Discovery())
 		if err != nil {
 			return fmt.Errorf("failed to get API group resources, got err: %w", err)
 		}
 		mapper := restmapper.NewDiscoveryRESTMapper(gr)
 
+		// Create a serializer that can decode
 		decodingSerializer := serializerYaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
 
 		for _, object := range objects {
 			obj := &unstructured.Unstructured{}
 
+			// Decode the object into a k8s runtime Object. This also
+			// returns the GroupValueKind for the object. GVK identifies a
+			// kind. A kind is the implementation of a K8s API resource.
+			// For instance, a pod is a resource and it's v1/Pod
+			// implementation is its kind.
+			// TODO: Understand if this is needed.
 			runtimeObj, gvk, err := decodingSerializer.Decode(object.Raw, nil, obj)
 			if err != nil {
 				return fmt.Errorf("failed to decode object, got err: %w", err)
 			}
 
+			// Find the resource mapping for the GVK extracted from the
+			// object. A resource type is uniquely identified by a Group,
+			// Version, Resource tuple where a kind is identified by a
+			// Group, Version, Kind tuple. You can see these mappings using
+			// kubectl api-resources.
 			gvr, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 			if err != nil {
 				return fmt.Errorf("failed to get gvr, got err: %w", err)
 			}
 
-			// 6. Obtain the REST interface for the GVR
+			// Establish a REST mapping for the GVR. For instance
+			// for a Pod the endpoint we need is: GET /apis/v1/namespaces/{namespace}/pods/{name}
+			// As some objects are not namespaced (e.g. PVs) a namespace may not be required.
 			var dr dynamic.ResourceInterface
 			if gvr.Scope.Name() == meta.RESTScopeNameNamespace {
 				dr = dynamicClient.Resource(gvr.Resource).Namespace(obj.GetNamespace())
@@ -111,13 +124,15 @@ to quickly create a Cobra application.`,
 				dr = dynamicClient.Resource(gvr.Resource)
 			}
 
-			// 6. Marshal Object into JSON
+			// Marshall our runtime object into json. All json is
+			// valid yaml but not all yaml is valid json. The
+			// APIServer works on json.
 			data, err := json.Marshal(runtimeObj)
 			if err != nil {
 				return fmt.Errorf("failed to marshal json to runtime obj, got err: %w", err)
 			}
 
-			// 7. Apply the thing
+			// Attempt to ServerSideApply the provided object.
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			k8sObj, err := dr.Patch(ctx, obj.GetName(), types.ApplyPatchType, data, metav1.PatchOptions{
@@ -201,27 +216,7 @@ func buildConfig() (*rest.Config, error) {
 	return config, nil
 }
 
-// DecodePods decodes yaml -> *v1.Pod.
-func DecodePods(y *yaml.YAMLOrJSONDecoder) ([]*v1.Pod, error) {
-	pods := []*v1.Pod{}
-
-	for {
-		pod := &v1.Pod{}
-		if err := y.Decode(pod); err != nil {
-			// We expect an EOF error when decoding is done,
-			// anything else should count as a function fail.
-			if err.Error() != "EOF" {
-				return nil, err
-			}
-
-			return pods, nil
-		}
-
-		pods = append(pods, pod)
-	}
-}
-
-func decode(y *yaml.YAMLOrJSONDecoder) ([]*runtime.RawExtension, error) {
+func decodeInput(y *yaml.YAMLOrJSONDecoder) ([]*runtime.RawExtension, error) {
 	objects := []*runtime.RawExtension{}
 
 	for {
@@ -238,88 +233,34 @@ func decode(y *yaml.YAMLOrJSONDecoder) ([]*runtime.RawExtension, error) {
 	}
 }
 
+func decodeRawObjects(decoder runtime.Serializer, data []byte, into *unstructured.Unstructured) (runtime.Object, *schema.GroupVersionKind, error) {
+	return decoder.Decode(data, nil, into)
+}
+
+func getResourceMapping(mapper meta.RESTMapper, gvk *schema.GroupVersionKind) (*meta.RESTMapping, error) {
+	return mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+}
+
+func getRESTMapping(dynamicClient dynamic.Interface, name meta.RESTScopeName, namespace string, resource schema.GroupVersionResource) dynamic.ResourceInterface {
+	var dr dynamic.ResourceInterface
+	if name == meta.RESTScopeNameNamespace {
+		dr = dynamicClient.Resource(resource).Namespace(namespace)
+	} else {
+		dr = dynamicClient.Resource(resource)
+	}
+
+	return dr
+}
+
+func marshallRuntimeObj(obj runtime.Object) ([]byte, error) {
+	data, err := json.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal json to runtime obj, got err: %w", err)
+	}
+
+	return data, nil
+}
+
 func applyObjects() {
 
-}
-
-func CreateOrApplyPod(client *kubernetes.Clientset, desiredPod *v1.Pod) error {
-	// Attempt to get pods. If pods cannot be gotten then create them.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	existingPod, err := client.CoreV1().Pods(desiredPod.Namespace).Get(ctx, desiredPod.Name, metav1.GetOptions{})
-	if err != nil {
-		if errors.IsNotFound(err) {
-			// Set Managed Field to be our CLI App
-			desiredPod.SetManagedFields([]metav1.ManagedFieldsEntry{
-				{
-					Manager:   fieldManager,
-					Operation: metav1.ManagedFieldsOperationApply,
-					//FieldsV1: &metav1.FieldsV1{
-					//	Raw: []byte("f:metadata"),
-					//},
-				},
-			})
-			// TODO Call CreatePod func
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			pod, err := client.CoreV1().Pods(desiredPod.Namespace).Create(ctx, desiredPod, metav1.CreateOptions{})
-			if err != nil {
-				return err
-			}
-			fmt.Printf("pod %s/%s created", pod.Namespace, pod.Name)
-			return nil
-		} else {
-			return err
-		}
-	}
-
-	// Call ApplyPod func
-	return ApplyPod(client, existingPod, desiredPod)
-
-}
-
-func ApplyPod(client *kubernetes.Clientset, existingPod, desiredPod *v1.Pod) error {
-	podApplyConf, err := applyv1.ExtractPod(existingPod, fieldManager)
-	if err != nil {
-		return fmt.Errorf("got err extracting pod, err: %w", err)
-	}
-
-	diffMetadata(podApplyConf, existingPod, desiredPod)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	appliedPod, err := client.CoreV1().Pods(existingPod.Namespace).Apply(ctx, podApplyConf, metav1.ApplyOptions{
-		FieldManager: fieldManager,
-	})
-
-	if err != nil {
-		return fmt.Errorf("got err applying pod, err: %w", err)
-	}
-
-	fmt.Printf("applied pod: \n%v", appliedPod)
-
-	return nil
-}
-
-// diffMetadata diffs the existing vs the desired Pods ObjectMeta as these are
-// the only fields that can be changed at runtime.
-func diffMetadata(podApplyConf *applyv1.PodApplyConfiguration, existingPod, desiredPod *v1.Pod) {
-	// TODO WithOwnerReference
-	if !reflect.DeepEqual(existingPod.ObjectMeta.Annotations, desiredPod.ObjectMeta.Annotations) {
-		podApplyConf.WithAnnotations(desiredPod.Annotations)
-	}
-	if !reflect.DeepEqual(existingPod.ObjectMeta.Labels, desiredPod.ObjectMeta.Labels) {
-		podApplyConf.WithLabels(desiredPod.Labels)
-	}
-	if !reflect.DeepEqual(existingPod.ObjectMeta.Finalizers, desiredPod.ObjectMeta.Finalizers) {
-		podApplyConf.WithFinalizers(desiredPod.GetFinalizers()...)
-	}
-}
-
-func diffSpec(podApplyConf *applyv1.PodApplyConfiguration, existingPod, desiredPod *v1.Pod) error {
-	if !reflect.DeepEqual(existingPod.Spec, desiredPod.Spec) {
-		return fmt.Errorf("existing and desired pods have different specs. spec cannot be updated at runtime")
-	}
-	return nil
 }
