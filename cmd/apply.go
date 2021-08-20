@@ -27,41 +27,42 @@ import (
 )
 
 const (
-	fieldManager string = "kubecuttle"
+	fieldManager   string        = "kubecuttle"
+	defaultTimeout time.Duration = 10 * time.Second
 )
 
 // applyCmd represents the Apply command
 var applyCmd = &cobra.Command{
 	Use:   "apply",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+	Short: "Apply a confiugration to a resource via a file or stdin",
+	Long: `Apply uses ServerSideApply to create or patch a resource, or resources, passed
+to apply. Apply mimics the behaviour of kubectl apply -f.
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+Examples:
+	# Apply the configuration from stdin to a pod.
+	cat pod.json | kubecuttle apply -f -
+
+	# Apply the configuration from a file to a pod. 
+	kubecuttle apply -f ./pod.yaml
+`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		input, err := cmd.Flags().GetString("file")
 		if err != nil {
 			return fmt.Errorf("could not get value of file flag, got err: %s", err)
 		}
 
-		var (
-			fileContents []byte
-			file         string
-		)
-
 		// Parse input
 		switch input {
 		case "-":
-			file = "/dev/stdin"
+			input = "/dev/stdin"
+		case "":
+			return fmt.Errorf("no input file passed")
 		default:
-			file = input
 		}
 
-		fileContents, err = ioutil.ReadFile(file)
+		fileContents, err := ioutil.ReadFile(input)
 		if err != nil {
-			return fmt.Errorf("failed to read file: %s, got err: %s", file, err)
+			return fmt.Errorf("failed to read file: %s, got err: %s", input, err)
 		}
 
 		// Attempt to decode input into pods.
@@ -99,7 +100,11 @@ to quickly create a Cobra application.`,
 			// For instance, a pod is a resource and it's v1/Pod
 			// implementation is its kind.
 			// TODO: Understand if this is needed.
-			runtimeObj, gvk, err := decodingSerializer.Decode(object.Raw, nil, obj)
+			//runtimeObj, gvk, err := decodingSerializer.Decode(object.Raw, nil, obj)
+			//if err != nil {
+			//	return fmt.Errorf("failed to decode object, got err: %w", err)
+			//}
+			runtimeObj, gvk, err := decodeRawObjects(decodingSerializer, object.Raw, obj)
 			if err != nil {
 				return fmt.Errorf("failed to decode object, got err: %w", err)
 			}
@@ -109,7 +114,7 @@ to quickly create a Cobra application.`,
 			// Version, Resource tuple where a kind is identified by a
 			// Group, Version, Kind tuple. You can see these mappings using
 			// kubectl api-resources.
-			gvr, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+			gvr, err := getResourceMapping(mapper, gvk)
 			if err != nil {
 				return fmt.Errorf("failed to get gvr, got err: %w", err)
 			}
@@ -117,17 +122,12 @@ to quickly create a Cobra application.`,
 			// Establish a REST mapping for the GVR. For instance
 			// for a Pod the endpoint we need is: GET /apis/v1/namespaces/{namespace}/pods/{name}
 			// As some objects are not namespaced (e.g. PVs) a namespace may not be required.
-			var dr dynamic.ResourceInterface
-			if gvr.Scope.Name() == meta.RESTScopeNameNamespace {
-				dr = dynamicClient.Resource(gvr.Resource).Namespace(obj.GetNamespace())
-			} else {
-				dr = dynamicClient.Resource(gvr.Resource)
-			}
+			dr := getRESTMapping(dynamicClient, gvr.Scope.Name(), obj.GetNamespace(), gvr.Resource)
 
 			// Marshall our runtime object into json. All json is
 			// valid yaml but not all yaml is valid json. The
 			// APIServer works on json.
-			data, err := json.Marshal(runtimeObj)
+			data, err := marshallRuntimeObj(runtimeObj)
 			if err != nil {
 				return fmt.Errorf("failed to marshal json to runtime obj, got err: %w", err)
 			}
@@ -157,7 +157,7 @@ func init() {
 	// Cobra supports Persistent Flags which will work for this command
 	// and all subcommands, e.g.:
 	// ApplyCmd.PersistentFlags().String("foo", "", "A help for foo")
-	applyCmd.PersistentFlags().StringP("file", "f", "", "pass - to apply yaml configuration from STDIN")
+	applyCmd.PersistentFlags().StringP("file", "f", "", "pass a file path or pass - to apply yaml configuration from STDIN")
 
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
@@ -261,6 +261,10 @@ func marshallRuntimeObj(obj runtime.Object) ([]byte, error) {
 	return data, nil
 }
 
-func applyObjects() {
-
+func applyObjects(dr dynamic.ResourceInterface, obj *unstructured.Unstructured, data []byte) (*unstructured.Unstructured, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel()
+	return dr.Patch(ctx, obj.GetName(), types.ApplyPatchType, data, metav1.PatchOptions{
+		FieldManager: fieldManager,
+	})
 }

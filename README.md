@@ -3,8 +3,10 @@
 ## Notes
 Used Cobra Generator to generate app
 * Ease of use
-* Cobra pretty standard in Go so people can easily navigate it. 
+* Cobra pretty standard in Go so others could extend it easily. 
 
+Uses Server Side Apply in order to deal with arbitrary resource Kinds. Downside
+of this is that there's no validation client side. 
 
 ## Aim
 

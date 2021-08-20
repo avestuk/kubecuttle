@@ -96,34 +96,31 @@ spec:
     - "1000"
 `
 
-func TestApplyCmd(t *testing.T) {
-
-	//applyCmd.Run(rootCmd, []string{"-f", input})
-}
-
 func TestDecode(t *testing.T) {
-	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(onePod)), 4096)
+	cases := []struct {
+		Input       string
+		ObjectCount int
+	}{
+		{onePod, 1},
+		{twoPods, 2},
+	}
 
-	objects, err := decodeInput(yamlDecoder)
-	require.NoError(t, err, "failed to decode objects")
-	require.Len(t, objects, 1, "expected two objects")
+	for _, tt := range cases {
+		yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(tt.Input)), 4096)
 
-	decodingSerializer := serializerYaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
-	obj := &unstructured.Unstructured{}
-	runtimeObj, _, err := decodeRawObjects(decodingSerializer, objects[0].Raw, obj)
-	require.NoError(t, err, "failed to decode raw objects")
+		objects, err := decodeInput(yamlDecoder)
+		require.NoError(t, err, "failed to decode objects")
+		require.Len(t, objects, tt.ObjectCount, "expected two objects")
 
-	runtimeObj.GetObjectKind().GroupVersionKind()
+		decodingSerializer := serializerYaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
+		obj := &unstructured.Unstructured{}
+		runtimeObj, _, err := decodeRawObjects(decodingSerializer, objects[0].Raw, obj)
+		require.NoError(t, err, "failed to decode raw objects")
+
+		runtimeObj.GetObjectKind().GroupVersionKind()
+	}
 
 }
-func TestDecodePods(t *testing.T) {
-	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(twoPods)), 4096)
-
-	pods, err := decodeInput(yamlDecoder)
-	require.NoError(t, err, "got error from DecodePods")
-	require.Len(t, pods, 2)
-}
-
 func TestBuildClients(t *testing.T) {
 	client, dClient, err := buildK8sClients()
 	require.NoError(t, err, "failed to build k8s clients")

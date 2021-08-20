@@ -30,7 +30,12 @@ var cfgFile string
 var rootCmd = &cobra.Command{
 	Use:   "kubecuttle",
 	Short: "Reimplementation of kubectl apply -f",
-	Long:  `Reimplementation of kubectl apply -f -. Only input from STDIN is supported`,
+	Long: `Reimplementation of kubectl apply -f -
+	
+	Input from stdin or files is supported.
+	
+	Kubecuttle uses the KUBECONFIG envvar to set the Kubernetes cluster context.
+	`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	// Run: func(cmd *cobra.Command, args []string) { },
