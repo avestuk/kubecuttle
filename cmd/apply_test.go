@@ -36,7 +36,7 @@ var onePodMetaUpdate = `
 apiVersion: v1
 kind: Pod
 metadata:
-  name: busybox-sleep
+  name: busybox-meta-update
   namespace: sre-test
 spec:
   containers:
@@ -49,7 +49,7 @@ spec:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: busybox-sleep
+  name: busybox-meta-update
   namespace: sre-test
   labels:
     foo: bar
@@ -65,7 +65,7 @@ var onePodSpecUpdate = `
 apiVersion: v1
 kind: Pod
 metadata:
-  name: busybox-sleep
+  name: busybox-spec-update
   namespace: sre-test
 spec:
   containers:
@@ -78,7 +78,7 @@ spec:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: busybox-sleep
+  name: busybox-spec-update
   namespace: sre-test
 spec:
   containers:
@@ -92,7 +92,7 @@ var onePodInvalidSpecUpdate = `
 apiVersion: v1
 kind: Pod
 metadata:
-  name: busybox-sleep
+  name: busybox-invalid-spec
   namespace: sre-test
 spec:
   containers:
