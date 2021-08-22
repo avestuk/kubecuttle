@@ -66,9 +66,7 @@ Examples:
 		}
 
 		// Attempt to decode input into pods.
-		yamlDecoder := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(fileContents), 4096)
-
-		objects, err := decodeInput(yamlDecoder)
+		objects, err := decodeInput(fileContents)
 		if err != nil {
 			return fmt.Errorf("failed to decode objects, got err: %w", err)
 		}
@@ -133,11 +131,7 @@ Examples:
 			}
 
 			// Attempt to ServerSideApply the provided object.
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			k8sObj, err := dr.Patch(ctx, obj.GetName(), types.ApplyPatchType, data, metav1.PatchOptions{
-				FieldManager: "kubecuttle",
-			})
+			k8sObj, err := applyObjects(dr, obj, data)
 			if err != nil {
 				return fmt.Errorf("failed to apply obj, got err: %w", err)
 			}
@@ -216,7 +210,8 @@ func buildConfig() (*rest.Config, error) {
 	return config, nil
 }
 
-func decodeInput(y *yaml.YAMLOrJSONDecoder) ([]*runtime.RawExtension, error) {
+func decodeInput(fileContents []byte) ([]*runtime.RawExtension, error) {
+	y := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(fileContents), 4096)
 	objects := []*runtime.RawExtension{}
 
 	for {

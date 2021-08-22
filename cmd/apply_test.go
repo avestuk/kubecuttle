@@ -3,9 +3,6 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	serializerYaml "k8s.io/apimachinery/pkg/runtime/serializer/yaml"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
 )
@@ -42,6 +38,19 @@ kind: Pod
 metadata:
   name: busybox-sleep
   namespace: sre-test
+spec:
+  containers:
+  - name: busybox
+    image: busybox
+    args:
+    - sleep
+    - "1000000"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox-sleep
+  namespace: sre-test
   labels:
     foo: bar
 spec:
@@ -52,7 +61,6 @@ spec:
     - sleep
     - "1000000"
 `
-
 var onePodSpecUpdate = `
 apiVersion: v1
 kind: Pod
@@ -65,7 +73,50 @@ spec:
     image: busybox
     args:
     - sleep
+    - "1000000"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox-sleep
+  namespace: sre-test
+spec:
+  containers:
+  - name: busybox
+    image: busybox:stable
+    args:
+    - sleep
+    - "1000000"
+`
+var onePodInvalidSpecUpdate = `
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox-sleep
+  namespace: sre-test
+spec:
+  containers:
+  - name: busybox
+    image: busybox
+    args:
+    - sleep
+    - "1000000"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox-sleep
+  namespace: sre-test
+spec:
+  containers:
+  - name: busybox
+    image: busybox
+    args:
+    - sleep
     - "300"
+    env:
+    - name: foo
+      value: bar
 `
 
 var twoPods = `
@@ -119,15 +170,25 @@ func TestDecode(t *testing.T) {
 	cases := []struct {
 		Input       string
 		ObjectCount int
+		Kind        string
+		Version     string
 	}{
-		{onePod, 1},
-		{twoPods, 2},
+		{
+			onePod,
+			1,
+			"Pod",
+			"v1",
+		},
+		{
+			twoPods,
+			2,
+			"Pod",
+			"v1",
+		},
 	}
 
 	for _, tt := range cases {
-		yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(tt.Input)), 4096)
-
-		objects, err := decodeInput(yamlDecoder)
+		objects, err := decodeInput([]byte(tt.Input))
 		require.NoError(t, err, "failed to decode objects")
 		require.Len(t, objects, tt.ObjectCount, "expected two objects")
 
@@ -137,8 +198,8 @@ func TestDecode(t *testing.T) {
 		require.NoError(t, err, "failed to decode raw objects")
 		gvk := runtimeObj.GetObjectKind().GroupVersionKind()
 		require.NotNil(t, gvk)
-		require.Equal(t, "Pod", gvk.Kind)
-		require.Equal(t, gvk.Version, "v1")
+		require.Equal(t, tt.Kind, gvk.Kind)
+		require.Equal(t, tt.Version, gvk.Version)
 	}
 }
 
@@ -153,9 +214,7 @@ func TestIncorrectSpec(t *testing.T) {
 	mapper := restmapper.NewDiscoveryRESTMapper(gr)
 
 	// Build decoder
-	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(incorrectSpec)), 4096)
-
-	objects, err := decodeInput(yamlDecoder)
+	objects, err := decodeInput([]byte(incorrectSpec))
 	require.NoError(t, err, "got error from DecodePods")
 
 	decodingSerializer := serializerYaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
@@ -166,7 +225,8 @@ func TestIncorrectSpec(t *testing.T) {
 	gvr, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	require.NoError(t, err, "failed to get gvr")
 
-	// 6. Obtain the REST interface for the GVR
+	// Obtain the REST interface for the GVR and set a namespace if the K8s
+	// kind is namespaced. E.g. pod vs PV
 	var dr dynamic.ResourceInterface
 	if gvr.Scope.Name() == meta.RESTScopeNameNamespace {
 		dr = dynamicClient.Resource(gvr.Resource).Namespace(obj.GetNamespace())
@@ -174,17 +234,17 @@ func TestIncorrectSpec(t *testing.T) {
 		dr = dynamicClient.Resource(gvr.Resource)
 	}
 
-	// 6. Marshal Object into JSON
+	// Marshal Object into JSON
 	data, err := json.Marshal(runtimeObj)
 	require.NoError(t, err, "failed to marshal json to runtime obj")
 
-	// 7. Apply the thing
+	// Apply the thing
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	obj, err = dr.Patch(ctx, obj.GetName(), types.ApplyPatchType, data, metav1.PatchOptions{
 		FieldManager: "kubecuttle",
 	})
-	require.NoError(t, err, "failed to apply obj")
+	require.Error(t, err, "expected error applying incorrect object spec, got obj:\n%v", obj)
 }
 
 func TestBuildClients(t *testing.T) {
@@ -210,78 +270,184 @@ func TestBuildClients(t *testing.T) {
 	require.Greater(t, len(dpods.Items), 1, "expected kube-system to return more than 1 pod")
 }
 
-func TestThing(t *testing.T) {
-	// Build required k8s clients
-	client, dynamicClient, err := buildK8sClients()
-	require.NoError(t, err, "failed to build client")
-
-	// Return GroupMappings for K8s API resources.
-	gr, err := restmapper.GetAPIGroupResources(client.Discovery())
-	require.NoError(t, err, "failed to get API group resources")
-	mapper := restmapper.NewDiscoveryRESTMapper(gr)
-
-	// 3. Decode YAML
-	decodingSerializer := serializerYaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
-	obj := &unstructured.Unstructured{}
-
-	// 4. Find GVK
-	runtimeObj, gvk, err := decodingSerializer.Decode([]byte(onePod), nil, obj)
-	require.NoError(t, err, "got err deserializng")
-
-	fmt.Printf("gvk: %s", gvk.String())
-
-	// 4. Find GVR
-	gvr, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-	require.NoError(t, err, "failed to get gvr")
-
-	// 6. Obtain the REST interface for the GVR
-	var dr dynamic.ResourceInterface
-	if gvr.Scope.Name() == meta.RESTScopeNameNamespace {
-		dr = dynamicClient.Resource(gvr.Resource).Namespace(obj.GetNamespace())
-	} else {
-		dr = dynamicClient.Resource(gvr.Resource)
+func TestApply(t *testing.T) {
+	cases := []struct {
+		Name         string
+		Input        string
+		ApplySuccess bool
+	}{
+		{
+			"one pod",
+			onePod,
+			true,
+		},
+		{
+			"two pods",
+			twoPods,
+			true,
+		},
+		{
+			"incorrect spec",
+			incorrectSpec,
+			false,
+		},
 	}
 
-	// 6. Marshal Object into JSON
-	data, err := json.Marshal(runtimeObj)
-	require.NoError(t, err, "failed to marshal json to runtime obj")
+	for _, tt := range cases {
+		// Build required k8s clients
+		client, dynamicClient, err := buildK8sClients()
+		require.NoError(t, err, "failed to build client")
 
-	// 7. Apply the thing
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	obj, err = dr.Patch(ctx, obj.GetName(), types.ApplyPatchType, data, metav1.PatchOptions{
-		FieldManager: "kubecuttle",
-	})
-	require.NoError(t, err, "failed to apply obj")
+		// Return GroupMappings for K8s API resources.
+		gr, err := restmapper.GetAPIGroupResources(client.Discovery())
+		require.NoError(t, err, "failed to get API group resources")
+		mapper := restmapper.NewDiscoveryRESTMapper(gr)
 
-	// Go again with the next pod
-	modifiedObj := &unstructured.Unstructured{}
+		// Build decoder
+		objects, err := decodeInput([]byte(tt.Input))
+		require.NoError(t, err, "failed to decode test input, %s", tt.Name)
 
-	// 4. Find GVK
-	mruntimeObj, gvk, err := decodingSerializer.Decode([]byte(onePodMetaUpdate), nil, modifiedObj)
-	require.NoError(t, err, "got err deserializng")
+		// Create a serializer that can decode
+		decodingSerializer := serializerYaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
 
-	// 4. Find GVR
-	gvr, err = mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-	require.NoError(t, err, "failed to get gvr")
+		for _, object := range objects {
+			obj := &unstructured.Unstructured{}
 
-	// 6. Obtain the REST interface for the GVR
-	if gvr.Scope.Name() == meta.RESTScopeNameNamespace {
-		dr = dynamicClient.Resource(gvr.Resource).Namespace(obj.GetNamespace())
-	} else {
-		dr = dynamicClient.Resource(gvr.Resource)
+			// Decode the object into a k8s runtime Object. This also
+			// returns the GroupValueKind for the object. GVK identifies a
+			// kind. A kind is the implementation of a K8s API resource.
+			// For instance, a pod is a resource and it's v1/Pod
+			// implementation is its kind.
+			runtimeObj, gvk, err := decodeRawObjects(decodingSerializer, object.Raw, obj)
+			require.NoError(t, err, "failed to decode object")
+
+			// Find the resource mapping for the GVK extracted from the
+			// object. A resource type is uniquely identified by a Group,
+			// Version, Resource tuple where a kind is identified by a
+			// Group, Version, Kind tuple. You can see these mappings using
+			// kubectl api-resources.
+			gvr, err := getResourceMapping(mapper, gvk)
+			require.NoError(t, err, "failed to get GroupVersionResource from GroupVersionKind")
+
+			// Establish a REST mapping for the GVR. For instance
+			// for a Pod the endpoint we need is: GET /apis/v1/namespaces/{namespace}/pods/{name}
+			// As some objects are not namespaced (e.g. PVs) a namespace may not be required.
+			dr := getRESTMapping(dynamicClient, gvr.Scope.Name(), obj.GetNamespace(), gvr.Resource)
+
+			// Marshall our runtime object into json. All json is
+			// valid yaml but not all yaml is valid json. The
+			// APIServer works on json.
+			data, err := marshallRuntimeObj(runtimeObj)
+			require.NoError(t, err, "failed to marshal json to runtime obj")
+
+			// Attempt to ServerSideApply the provided object.
+			defer func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				dr.Delete(ctx, obj.GetName(), *metav1.NewDeleteOptions(0))
+			}()
+
+			_, err = applyObjects(dr, obj, data)
+			switch {
+			case tt.ApplySuccess:
+				require.NoError(t, err, "failed to patch object, test: %s", tt.Name)
+			case !tt.ApplySuccess:
+				require.Error(t, err, "expected failure to patch object but got none, test: %s", tt.Name)
+			}
+		}
+	}
+}
+
+func TestUpdate(t *testing.T) {
+	cases := []struct {
+		Name          string
+		Input         string
+		UpdateSuccess bool
+	}{
+		{
+			"meta update",
+			onePodMetaUpdate,
+			true,
+		},
+		{
+			"spec update",
+			onePodSpecUpdate,
+			true,
+		},
+		{
+			"invalid spec update",
+			onePodInvalidSpecUpdate,
+			false,
+		},
 	}
 
-	// 6. Marshal Object into JSON
-	mdata, err := json.Marshal(mruntimeObj)
-	require.NoError(t, err, "failed to marshal json to runtime obj")
+	for i, tt := range cases {
+		// Build required k8s clients
+		client, dynamicClient, err := buildK8sClients()
+		require.NoError(t, err, "failed to build client")
 
-	// 7. Apply the thing
-	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_, err = dr.Patch(ctx, modifiedObj.GetName(), types.ApplyPatchType, mdata, metav1.PatchOptions{
-		FieldManager: "kubecuttle",
-	})
-	require.NoError(t, err, "failed to apply obj")
+		// Return GroupMappings for K8s API resources.
+		gr, err := restmapper.GetAPIGroupResources(client.Discovery())
+		require.NoError(t, err, "failed to get API group resources")
+		mapper := restmapper.NewDiscoveryRESTMapper(gr)
 
+		// Build decoder
+		objects, err := decodeInput([]byte(tt.Input))
+		require.NoError(t, err, "failed to decode test input, %s", tt.Name)
+
+		// Create a serializer that can decode
+		decodingSerializer := serializerYaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
+
+		for _, object := range objects {
+			obj := &unstructured.Unstructured{}
+
+			// Decode the object into a k8s runtime Object. This also
+			// returns the GroupValueKind for the object. GVK identifies a
+			// kind. A kind is the implementation of a K8s API resource.
+			// For instance, a pod is a resource and it's v1/Pod
+			// implementation is its kind.
+			runtimeObj, gvk, err := decodeRawObjects(decodingSerializer, object.Raw, obj)
+			require.NoError(t, err, "failed to decode object")
+
+			// Find the resource mapping for the GVK extracted from the
+			// object. A resource type is uniquely identified by a Group,
+			// Version, Resource tuple where a kind is identified by a
+			// Group, Version, Kind tuple. You can see these mappings using
+			// kubectl api-resources.
+			gvr, err := getResourceMapping(mapper, gvk)
+			require.NoError(t, err, "failed to get GroupVersionResource from GroupVersionKind")
+
+			// Establish a REST mapping for the GVR. For instance
+			// for a Pod the endpoint we need is: GET /apis/v1/namespaces/{namespace}/pods/{name}
+			// As some objects are not namespaced (e.g. PVs) a namespace may not be required.
+			dr := getRESTMapping(dynamicClient, gvr.Scope.Name(), obj.GetNamespace(), gvr.Resource)
+
+			// Marshall our runtime object into json. All json is
+			// valid yaml but not all yaml is valid json. The
+			// APIServer works on json.
+			data, err := marshallRuntimeObj(runtimeObj)
+			require.NoError(t, err, "failed to marshal json to runtime obj")
+
+			// Attempt to ServerSideApply the provided object.
+			defer func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				dr.Delete(ctx, obj.GetName(), *metav1.NewDeleteOptions(0))
+			}()
+
+			_, err = applyObjects(dr, obj, data)
+			switch i {
+			// First object will be apply creation
+			case 0:
+				require.NoError(t, err, "failed to patch object, test: %s", tt.Name)
+			// Second object will be apply update
+			case 1:
+				if tt.UpdateSuccess {
+					require.NoError(t, err, "failed to update object, test; %s", tt.Name)
+				} else {
+					require.Error(t, err, "expected failure to patch object but got none, test: %s", tt.Name)
+				}
+			}
+		}
+	}
 }
