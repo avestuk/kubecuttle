@@ -74,7 +74,7 @@ Examples:
 		// Build clients
 		client, dynamicClient, err := buildK8sClients()
 		if err != nil {
-			return fmt.Errorf("failed to build clients, got err: %w", err)
+			return fmt.Errorf("failed to build clients: %w", err)
 		}
 
 		// Fetch K8s group resources, essentially a list of resources
@@ -97,11 +97,6 @@ Examples:
 			// kind. A kind is the implementation of a K8s API resource.
 			// For instance, a pod is a resource and it's v1/Pod
 			// implementation is its kind.
-			// TODO: Understand if this is needed.
-			//runtimeObj, gvk, err := decodingSerializer.Decode(object.Raw, nil, obj)
-			//if err != nil {
-			//	return fmt.Errorf("failed to decode object, got err: %w", err)
-			//}
 			runtimeObj, gvk, err := decodeRawObjects(decodingSerializer, object.Raw, obj)
 			if err != nil {
 				return fmt.Errorf("failed to decode object, got err: %w", err)
