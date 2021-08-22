@@ -96,6 +96,25 @@ spec:
     - "1000"
 `
 
+var incorrectSpec = `
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox-wrong
+  namespace: sre-test
+spec:
+  containers:
+  - name: busybox
+    image: busybox
+    args:
+    - sleep
+    - "300"
+should:
+  not:
+  - be
+  - here
+`
+
 func TestDecode(t *testing.T) {
 	cases := []struct {
 		Input       string
@@ -116,11 +135,58 @@ func TestDecode(t *testing.T) {
 		obj := &unstructured.Unstructured{}
 		runtimeObj, _, err := decodeRawObjects(decodingSerializer, objects[0].Raw, obj)
 		require.NoError(t, err, "failed to decode raw objects")
+		gvk := runtimeObj.GetObjectKind().GroupVersionKind()
+		require.NotNil(t, gvk)
+		require.Equal(t, "Pod", gvk.Kind)
+		require.Equal(t, gvk.Version, "v1")
+	}
+}
 
-		runtimeObj.GetObjectKind().GroupVersionKind()
+func TestIncorrectSpec(t *testing.T) {
+	// Build required k8s clients
+	client, dynamicClient, err := buildK8sClients()
+	require.NoError(t, err, "failed to build client")
+
+	// Return GroupMappings for K8s API resources.
+	gr, err := restmapper.GetAPIGroupResources(client.Discovery())
+	require.NoError(t, err, "failed to get API group resources")
+	mapper := restmapper.NewDiscoveryRESTMapper(gr)
+
+	// Build decoder
+	yamlDecoder := yaml.NewYAMLOrJSONDecoder(io.NopCloser(strings.NewReader(incorrectSpec)), 4096)
+
+	objects, err := decodeInput(yamlDecoder)
+	require.NoError(t, err, "got error from DecodePods")
+
+	decodingSerializer := serializerYaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
+	obj := &unstructured.Unstructured{}
+	runtimeObj, gvk, err := decodeRawObjects(decodingSerializer, objects[0].Raw, obj)
+	require.NoError(t, err, "failed to decode raw objects")
+
+	gvr, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	require.NoError(t, err, "failed to get gvr")
+
+	// 6. Obtain the REST interface for the GVR
+	var dr dynamic.ResourceInterface
+	if gvr.Scope.Name() == meta.RESTScopeNameNamespace {
+		dr = dynamicClient.Resource(gvr.Resource).Namespace(obj.GetNamespace())
+	} else {
+		dr = dynamicClient.Resource(gvr.Resource)
 	}
 
+	// 6. Marshal Object into JSON
+	data, err := json.Marshal(runtimeObj)
+	require.NoError(t, err, "failed to marshal json to runtime obj")
+
+	// 7. Apply the thing
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	obj, err = dr.Patch(ctx, obj.GetName(), types.ApplyPatchType, data, metav1.PatchOptions{
+		FieldManager: "kubecuttle",
+	})
+	require.NoError(t, err, "failed to apply obj")
 }
+
 func TestBuildClients(t *testing.T) {
 	client, dClient, err := buildK8sClients()
 	require.NoError(t, err, "failed to build k8s clients")
