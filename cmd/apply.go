@@ -173,6 +173,7 @@ func buildK8sClients() (*kubernetes.Clientset, dynamic.Interface, error) {
 	return client, dynamicClient, nil
 }
 
+// typedClientInit creates a typed Kubernetes Client.
 func typedClientInit(config *rest.Config) (*kubernetes.Clientset, error) {
 	client, err := kubernetes.NewForConfig(config)
 	if err != nil {
@@ -182,6 +183,7 @@ func typedClientInit(config *rest.Config) (*kubernetes.Clientset, error) {
 	return client, nil
 }
 
+// dynamicClientInit creates a dynamic Kubernetes Client.
 func dynamicClientInit(config *rest.Config) (dynamic.Interface, error) {
 	dynamicClient, err := dynamic.NewForConfig(config)
 	if err != nil {
@@ -191,6 +193,7 @@ func dynamicClientInit(config *rest.Config) (dynamic.Interface, error) {
 	return dynamicClient, nil
 }
 
+// buildConfig builds a Kubernetes client config.
 func buildConfig() (*rest.Config, error) {
 	kubeconfigPath := os.Getenv("KUBECONFIG")
 	if kubeconfigPath == "" {
@@ -205,6 +208,7 @@ func buildConfig() (*rest.Config, error) {
 	return config, nil
 }
 
+// decodeInput decodes a YAML or JSON []bytes to a generic K8s object.
 func decodeInput(fileContents []byte) ([]*runtime.RawExtension, error) {
 	y := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(fileContents), 4096)
 	objects := []*runtime.RawExtension{}
@@ -223,14 +227,17 @@ func decodeInput(fileContents []byte) ([]*runtime.RawExtension, error) {
 	}
 }
 
+// decodeRawObjects turns an unstructured.Unstructured object into a runtime.Object.
 func decodeRawObjects(decoder runtime.Serializer, data []byte, into *unstructured.Unstructured) (runtime.Object, *schema.GroupVersionKind, error) {
 	return decoder.Decode(data, nil, into)
 }
 
+// getResourceMapping returns the resource that maps to a GroupKind.
 func getResourceMapping(mapper meta.RESTMapper, gvk *schema.GroupVersionKind) (*meta.RESTMapping, error) {
 	return mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 }
 
+// getRESTMapping returns a dynamic resource interface with the REST API mapping for a specific resource.
 func getRESTMapping(dynamicClient dynamic.Interface, name meta.RESTScopeName, namespace string, resource schema.GroupVersionResource) dynamic.ResourceInterface {
 	var dr dynamic.ResourceInterface
 	if name == meta.RESTScopeNameNamespace {
@@ -242,6 +249,7 @@ func getRESTMapping(dynamicClient dynamic.Interface, name meta.RESTScopeName, na
 	return dr
 }
 
+// marshallRuntimeObj marshalls a runtime object to JSON []byte.
 func marshallRuntimeObj(obj runtime.Object) ([]byte, error) {
 	data, err := json.Marshal(obj)
 	if err != nil {
@@ -251,6 +259,7 @@ func marshallRuntimeObj(obj runtime.Object) ([]byte, error) {
 	return data, nil
 }
 
+// applyObject uses the Patch API endpoint with Apply patch to create or update an object.
 func applyObjects(dr dynamic.ResourceInterface, obj *unstructured.Unstructured, data []byte) (*unstructured.Unstructured, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
 	defer cancel()
